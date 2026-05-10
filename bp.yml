@@ -1,0 +1,171 @@
+blueprint:
+  name: Hue Dimmer Zone Control (Adaptive Lighting Friendly)
+  description: >
+    Zigbee2MQTT Hue dimmer blueprint with:
+      - Single press toggle ON/OFF
+      - Normal turn_on so Adaptive Lighting can control brightness/color
+      - Double press brighten ONLY if light already on
+      - Hold dim ONLY if light already on
+
+  domain: automation
+
+  input:
+
+    action_sensor:
+      name: Action Sensor
+      description: Zigbee2MQTT action sensor
+      selector:
+        entity:
+          domain: sensor
+
+    target_light:
+      name: Target Light
+      selector:
+        target:
+          entity:
+            domain: light
+
+    brightness_step:
+      name: Brightness Step
+      default: 40
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: slider
+
+    dim_step:
+      name: Dim Step
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 50
+          mode: slider
+
+    dim_delay:
+      name: Dim Delay (ms)
+      default: 300
+      selector:
+        number:
+          min: 50
+          max: 1000
+          mode: box
+
+mode: restart
+
+variables:
+  light_entity: !input target_light
+  step: !input brightness_step
+  dim_step_value: !input dim_step
+  dim_delay_ms: !input dim_delay
+
+trigger:
+  - platform: state
+    entity_id: !input action_sensor
+
+action:
+  - variables:
+      action_value: "{{ trigger.to_state.state }}"
+      light_is_on: >
+        {{ expand(light_entity)
+           | selectattr('state', 'eq', 'on')
+           | list
+           | count > 0 }}
+
+  - choose:
+
+      ##########################################################
+      # SINGLE PRESS = TOGGLE
+      ##########################################################
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ action_value in ['on_press', 'press'] }}
+        sequence:
+
+          # TURN OFF
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ light_is_on }}"
+                sequence:
+                  - service: light.turn_off
+                    target: !input target_light
+
+            # TURN ON
+            default:
+              - service: light.turn_on
+                target: !input target_light
+
+      ##########################################################
+      # DOUBLE PRESS = BRIGHTNESS UP
+      # ONLY IF LIGHT ALREADY ON
+      ##########################################################
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ action_value in ['on_double_press', 'up_double_press'] }}
+          - condition: template
+            value_template: "{{ light_is_on }}"
+        sequence:
+          - service: light.turn_on
+            target: !input target_light
+            data:
+              brightness_step: "{{ step }}"
+
+      ##########################################################
+      # HOLD = DIM DOWN
+      # ONLY IF LIGHT ALREADY ON
+      ##########################################################
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ action_value in ['on_hold', 'down_hold'] }}
+          - condition: template
+            value_template: "{{ light_is_on }}"
+        sequence:
+          - repeat:
+              while:
+                - condition: template
+                  value_template: >
+                    {{ states(trigger.entity_id) in ['on_hold', 'down_hold'] }}
+
+              sequence:
+                - service: light.turn_on
+                  target: !input target_light
+                  data:
+                    brightness_step: >
+                      {{ -1 * dim_step_value }}
+
+                - delay:
+                    milliseconds: !input dim_delay
+
+      ##########################################################
+      # OPTIONAL: HOLD UP = BRIGHTNESS UP CONTINUOUSLY
+      ##########################################################
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ action_value == 'up_hold' }}
+          - condition: template
+            value_template: "{{ light_is_on }}"
+        sequence:
+          - repeat:
+              while:
+                - condition: template
+                  value_template: >
+                    {{ states(trigger.entity_id) == 'up_hold' }}
+
+              sequence:
+                - service: light.turn_on
+                  target: !input target_light
+                  data:
+                    brightness_step: "{{ dim_step_value }}"
+
+                - delay:
+                    milliseconds: !input dim_delay
